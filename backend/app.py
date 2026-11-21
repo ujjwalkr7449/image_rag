@@ -84,7 +84,7 @@ raw_secret_key = os.environ.get('SECRET_KEY', 'default-secret-key-super-secure')
 if len(raw_secret_key.encode('utf-8')) < 32:
     # Derive a stable HS256-safe secret from short local/dev keys.
     raw_secret_key = hashlib.sha256(raw_secret_key.encode('utf-8')).hexdigest()
-flask_flask_app.config['SECRET_KEY'] = raw_secret_key
+flask_app.config['SECRET_KEY'] = raw_secret_key
 basedir = os.path.abspath(os.path.dirname(__file__))
 flask_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
 flask_app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -182,7 +182,7 @@ def token_required(f):
             return jsonify({'message': 'Token is missing!'}), 401
         
         try:
-            data = jwt.decode(token, flask_flask_app.config['SECRET_KEY'], algorithms=["HS256"])
+            data = jwt.decode(token, flask_app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = User.query.filter_by(id=data['user_id']).first()
             if current_user is None:
                 return jsonify({'message': 'Token is invalid!', 'error': 'User no longer exists'}), 401
