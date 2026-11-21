@@ -29,3 +29,6 @@ typing_extensions==4.15.0
 Werkzeug==3.1.8
 gunicorn==21.2.0
 pypdf==6.9.2
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20

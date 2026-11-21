@@ -6,8 +6,15 @@ import hashlib
 import jwt
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from contextvars import ContextVar
+from types import SimpleNamespace
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from werkzeug.datastructures import FileStorage
+from werkzeug.wrappers import Response
+from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import or_
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -18,21 +25,71 @@ from pypdf import PdfReader
 
 load_dotenv()
 
-app = Flask(__name__)
-# Enable CORS for the frontend dev server
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+app = FastAPI(title="SnapStudy API")
+flask_app = Flask(__name__)  # Flask-SQLAlchemy remains the persistence layer.
+_request_context = ContextVar("legacy_request")
+
+class LegacyRequest:
+    def __getattr__(self, name):
+        return getattr(_request_context.get(), name)
+
+request = LegacyRequest()
+
+def jsonify(value):
+    return value
+
+def legacy_route(path, methods):
+    fastapi_path = path.replace("<int:", "{").replace("<", "{").replace(">", "}")
+    def register(handler):
+        async def endpoint(http_request: Request):
+            content_type = http_request.headers.get("content-type", "")
+            body_json = None
+            files, form = {}, {}
+            if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+                parsed = await http_request.form()
+                for key, value in parsed.multi_items():
+                    if hasattr(value, "filename"):
+                        files[key] = FileStorage(stream=io.BytesIO(await value.read()), filename=value.filename,
+                                                 name=key, content_type=value.content_type)
+                    else:
+                        form[key] = value
+            elif "application/json" in content_type:
+                try:
+                    body_json = await http_request.json()
+                except Exception:
+                    body_json = None
+            legacy = SimpleNamespace(headers=http_request.headers, files=files, form=form,
+                                     args=http_request.query_params, json=body_json,
+                                     get_json=lambda: body_json)
+            token = _request_context.set(legacy)
+            try:
+                with flask_app.app_context():
+                    result = await run_in_threadpool(handler, **http_request.path_params)
+            finally:
+                _request_context.reset(token)
+            status_code = 200
+            if isinstance(result, tuple) and len(result) == 2:
+                result, status_code = result
+            if isinstance(result, Response):
+                return result
+            return JSONResponse(content=result, status_code=status_code)
+        app.add_api_route(fastapi_path, endpoint, methods=methods)
+        return handler
+    return register
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Configuration
 raw_secret_key = os.environ.get('SECRET_KEY', 'default-secret-key-super-secure')
 if len(raw_secret_key.encode('utf-8')) < 32:
     # Derive a stable HS256-safe secret from short local/dev keys.
     raw_secret_key = hashlib.sha256(raw_secret_key.encode('utf-8')).hexdigest()
-app.config['SECRET_KEY'] = raw_secret_key
+flask_flask_app.config['SECRET_KEY'] = raw_secret_key
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+flask_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
+flask_app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+db = SQLAlchemy(flask_app)
 
 # Models
 class User(db.Model):
@@ -101,7 +158,7 @@ class AISettings(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-with app.app_context():
+with flask_app.app_context():
     db.create_all()
 
 # Groq Client Setup
@@ -125,7 +182,7 @@ def token_required(f):
             return jsonify({'message': 'Token is missing!'}), 401
         
         try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            data = jwt.decode(token, flask_flask_app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = User.query.filter_by(id=data['user_id']).first()
             if current_user is None:
                 return jsonify({'message': 'Token is invalid!', 'error': 'User no longer exists'}), 401
@@ -136,7 +193,7 @@ def token_required(f):
     return decorated
 
 # API Routes
-@app.route('/api/auth/signup', methods=['POST'])
+@legacy_route('/api/auth/signup', methods=['POST'])
 def signup():
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password') or not data.get('username'):
@@ -157,7 +214,7 @@ def signup():
         token = jwt.encode({
             'user_id': new_user.id,
             'exp': datetime.utcnow() + timedelta(days=7)
-        }, app.config['SECRET_KEY'], algorithm="HS256")
+        }, flask_app.config['SECRET_KEY'], algorithm="HS256")
         
         return jsonify({
             'message': 'Registered successfully', 
@@ -168,7 +225,7 @@ def signup():
         db.session.rollback()
         return jsonify({'message': 'Server error: ' + str(e)}), 500
 
-@app.route('/api/auth/login', methods=['POST'])
+@legacy_route('/api/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
@@ -181,7 +238,7 @@ def login():
     token = jwt.encode({
         'user_id': user.id,
         'exp': datetime.utcnow() + timedelta(days=7)
-    }, app.config['SECRET_KEY'], algorithm="HS256")
+    }, flask_app.config['SECRET_KEY'], algorithm="HS256")
     
     return jsonify({
         'message': 'Login successful',
@@ -189,13 +246,13 @@ def login():
         'user': {'id': user.id, 'username': user.username, 'email': user.email}
     })
 
-@app.route('/api/ai-settings', methods=['GET'])
+@legacy_route('/api/ai-settings', methods=['GET'])
 @token_required
 def get_ai_settings(current_user):
     settings = get_or_create_ai_settings(current_user.id)
     return jsonify({"success": True, "settings": serialize_ai_settings(settings)})
 
-@app.route('/api/ai-settings', methods=['PUT'])
+@legacy_route('/api/ai-settings', methods=['PUT'])
 @token_required
 def update_ai_settings(current_user):
     data = request.get_json() or {}
@@ -352,7 +409,7 @@ def parse_agentic_note_response(raw_content, note):
         "change_summary": None
     }
 
-@app.route('/api/analyze', methods=['POST'])
+@legacy_route('/api/analyze', methods=['POST'])
 @token_required
 def analyze_image(current_user):
     if 'image' not in request.files:
@@ -448,7 +505,7 @@ def analyze_image(current_user):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/chat', methods=['POST'])
+@legacy_route('/api/chat', methods=['POST'])
 @token_required
 def chat(current_user):
     data = request.json
@@ -519,7 +576,7 @@ def chat(current_user):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/sessions', methods=['GET'])
+@legacy_route('/api/sessions', methods=['GET'])
 @token_required
 def get_sessions(current_user):
     sessions = StudySession.query.filter_by(user_id=current_user.id).order_by(StudySession.created_at.desc()).all()
@@ -540,7 +597,7 @@ def get_sessions(current_user):
         })
     return jsonify({"success": True, "sessions": session_list})
 
-@app.route('/api/sessions/<int:session_id>', methods=['GET'])
+@legacy_route('/api/sessions/<int:session_id>', methods=['GET'])
 @token_required
 def get_session_detail(current_user, session_id):
     session = StudySession.query.filter_by(id=session_id, user_id=current_user.id).first()
@@ -562,7 +619,7 @@ def get_session_detail(current_user, session_id):
         "chats": chat_list
     })
 
-@app.route('/api/notes/<int:session_id>', methods=['GET'])
+@legacy_route('/api/notes/<int:session_id>', methods=['GET'])
 @token_required
 def get_note(current_user, session_id):
     session = StudySession.query.filter_by(id=session_id, user_id=current_user.id).first()
@@ -605,7 +662,7 @@ def get_note(current_user, session_id):
         }
     })
 
-@app.route('/api/notes/<int:session_id>', methods=['PUT'])
+@legacy_route('/api/notes/<int:session_id>', methods=['PUT'])
 @token_required
 def save_note(current_user, session_id):
     session = StudySession.query.filter_by(id=session_id, user_id=current_user.id).first()
@@ -653,7 +710,7 @@ def save_note(current_user, session_id):
         }
     })
 
-@app.route('/api/notes/generate', methods=['POST'])
+@legacy_route('/api/notes/generate', methods=['POST'])
 @token_required
 def generate_note(current_user):
     data = request.get_json() or {}
@@ -702,7 +759,7 @@ def generate_note(current_user):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/workspace-notes', methods=['GET'])
+@legacy_route('/api/workspace-notes', methods=['GET'])
 @token_required
 def list_workspace_notes(current_user):
     query = WorkspaceNote.query.filter_by(user_id=current_user.id)
@@ -726,7 +783,7 @@ def list_workspace_notes(current_user):
     notes = query.order_by(WorkspaceNote.updated_at.desc()).all()
     return jsonify({"success": True, "notes": [serialize_workspace_note(note) for note in notes]})
 
-@app.route('/api/workspace-notes', methods=['POST'])
+@legacy_route('/api/workspace-notes', methods=['POST'])
 @token_required
 def create_workspace_note(current_user):
     data = request.get_json() or {}
@@ -747,7 +804,7 @@ def create_workspace_note(current_user):
 
     return jsonify({"success": True, "note": serialize_workspace_note(note)}), 201
 
-@app.route('/api/workspace-notes/<int:note_id>', methods=['GET'])
+@legacy_route('/api/workspace-notes/<int:note_id>', methods=['GET'])
 @token_required
 def get_workspace_note(current_user, note_id):
     note = get_workspace_note_or_404(current_user, note_id)
@@ -761,7 +818,7 @@ def get_workspace_note(current_user, note_id):
         "chats": [serialize_note_chat(chat) for chat in chats]
     })
 
-@app.route('/api/workspace-notes/<int:note_id>', methods=['PUT'])
+@legacy_route('/api/workspace-notes/<int:note_id>', methods=['PUT'])
 @token_required
 def update_workspace_note(current_user, note_id):
     note = get_workspace_note_or_404(current_user, note_id)
@@ -783,7 +840,7 @@ def update_workspace_note(current_user, note_id):
     db.session.commit()
     return jsonify({"success": True, "note": serialize_workspace_note(note)})
 
-@app.route('/api/workspace-notes/<int:note_id>', methods=['DELETE'])
+@legacy_route('/api/workspace-notes/<int:note_id>', methods=['DELETE'])
 @token_required
 def delete_workspace_note(current_user, note_id):
     note = get_workspace_note_or_404(current_user, note_id)
@@ -795,7 +852,7 @@ def delete_workspace_note(current_user, note_id):
     db.session.commit()
     return jsonify({"success": True})
 
-@app.route('/api/workspace-notes/generate', methods=['POST'])
+@legacy_route('/api/workspace-notes/generate', methods=['POST'])
 @token_required
 def generate_workspace_note(current_user):
     data = request.get_json() or {}
@@ -862,7 +919,7 @@ def generate_workspace_note(current_user):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/workspace-notes/upload', methods=['POST'])
+@legacy_route('/api/workspace-notes/upload', methods=['POST'])
 @token_required
 def upload_workspace_note(current_user):
     if 'file' not in request.files:
@@ -893,7 +950,7 @@ def upload_workspace_note(current_user):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 400
 
-@app.route('/api/workspace-notes/<int:note_id>/chat', methods=['POST'])
+@legacy_route('/api/workspace-notes/<int:note_id>/chat', methods=['POST'])
 @token_required
 def chat_on_workspace_note(current_user, note_id):
     note = get_workspace_note_or_404(current_user, note_id)
@@ -988,4 +1045,5 @@ def chat_on_workspace_note(current_user, note_id):
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    import uvicorn
+    uvicorn.run(app, host='0.0.0.0', port=5000, reload=True)
