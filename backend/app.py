@@ -13,10 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from werkzeug.datastructures import FileStorage
-from werkzeug.wrappers import Response
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import or_
+from sqlalchemy import or_, create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from groq import Groq
@@ -26,7 +24,6 @@ from pypdf import PdfReader
 load_dotenv()
 
 app = FastAPI(title="SnapStudy API")
-flask_app = Flask(__name__)  # Flask-SQLAlchemy remains the persistence layer.
 _request_context = ContextVar("legacy_request")
 
 class LegacyRequest:
@@ -61,17 +58,20 @@ def legacy_route(path, methods):
             legacy = SimpleNamespace(headers=http_request.headers, files=files, form=form,
                                      args=http_request.query_params, json=body_json,
                                      get_json=lambda: body_json)
-            token = _request_context.set(legacy)
-            try:
-                with flask_app.app_context():
-                    result = await run_in_threadpool(handler, **http_request.path_params)
-            finally:
-                _request_context.reset(token)
+            def invoke_handler():
+                token = _request_context.set(legacy)
+                try:
+                    return handler(**http_request.path_params)
+                finally:
+                    try:
+                        db.session.remove()
+                    finally:
+                        _request_context.reset(token)
+
+            result = await run_in_threadpool(invoke_handler)
             status_code = 200
             if isinstance(result, tuple) and len(result) == 2:
                 result, status_code = result
-            if isinstance(result, Response):
-                return result
             return JSONResponse(content=result, status_code=status_code)
         app.add_api_route(fastapi_path, endpoint, methods=methods)
         return handler
@@ -84,15 +84,33 @@ raw_secret_key = os.environ.get('SECRET_KEY', 'default-secret-key-super-secure')
 if len(raw_secret_key.encode('utf-8')) < 32:
     # Derive a stable HS256-safe secret from short local/dev keys.
     raw_secret_key = hashlib.sha256(raw_secret_key.encode('utf-8')).hexdigest()
-flask_app.config['SECRET_KEY'] = raw_secret_key
 basedir = os.path.abspath(os.path.dirname(__file__))
-flask_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
-flask_app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+database_url = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
+engine = create_engine(database_url, connect_args={"check_same_thread": False})
+SessionLocal = scoped_session(sessionmaker(bind=engine, expire_on_commit=False))
+Base = declarative_base()
 
-db = SQLAlchemy(flask_app)
+class Database:
+    Model = Base
+    Column = Column
+    Integer = Integer
+    String = String
+    Text = Text
+    DateTime = DateTime
+    ForeignKey = ForeignKey
+    session = SessionLocal
+
+db = Database()
+
+class QueryProperty:
+    def __get__(self, instance, model):
+        return SessionLocal.query(model)
+
+Base.query = QueryProperty()
 
 # Models
 class User(db.Model):
+    __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -100,6 +118,7 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class StudySession(db.Model):
+    __tablename__ = 'study_session'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     image_mime = db.Column(db.String(50), nullable=False)
@@ -108,6 +127,7 @@ class StudySession(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class ChatMessage(db.Model):
+    __tablename__ = 'chat_message'
     id = db.Column(db.Integer, primary_key=True)
     session_id = db.Column(db.Integer, db.ForeignKey('study_session.id'), nullable=False)
     role = db.Column(db.String(20), nullable=False) # 'user' or 'assistant'
@@ -115,6 +135,7 @@ class ChatMessage(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Note(db.Model):
+    __tablename__ = 'note'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     session_id = db.Column(db.Integer, db.ForeignKey('study_session.id'), nullable=False, unique=True)
@@ -126,6 +147,7 @@ class Note(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class WorkspaceNote(db.Model):
+    __tablename__ = 'workspace_note'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     session_id = db.Column(db.Integer, db.ForeignKey('study_session.id'), nullable=True)
@@ -141,6 +163,7 @@ class WorkspaceNote(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class NoteChatMessage(db.Model):
+    __tablename__ = 'note_chat_message'
     id = db.Column(db.Integer, primary_key=True)
     note_id = db.Column(db.Integer, db.ForeignKey('workspace_note.id'), nullable=False)
     role = db.Column(db.String(20), nullable=False)
@@ -148,6 +171,7 @@ class NoteChatMessage(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class AISettings(db.Model):
+    __tablename__ = 'ai_settings'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
     perspective = db.Column(db.String(120), nullable=False, default='student')
@@ -158,8 +182,7 @@ class AISettings(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-with flask_app.app_context():
-    db.create_all()
+Base.metadata.create_all(bind=engine)
 
 # Groq Client Setup
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", "your-groq-api-key"))
@@ -182,7 +205,7 @@ def token_required(f):
             return jsonify({'message': 'Token is missing!'}), 401
         
         try:
-            data = jwt.decode(token, flask_app.config['SECRET_KEY'], algorithms=["HS256"])
+            data = jwt.decode(token, raw_secret_key, algorithms=["HS256"])
             current_user = User.query.filter_by(id=data['user_id']).first()
             if current_user is None:
                 return jsonify({'message': 'Token is invalid!', 'error': 'User no longer exists'}), 401
@@ -214,7 +237,7 @@ def signup():
         token = jwt.encode({
             'user_id': new_user.id,
             'exp': datetime.utcnow() + timedelta(days=7)
-        }, flask_app.config['SECRET_KEY'], algorithm="HS256")
+        }, raw_secret_key, algorithm="HS256")
         
         return jsonify({
             'message': 'Registered successfully', 
@@ -238,7 +261,7 @@ def login():
     token = jwt.encode({
         'user_id': user.id,
         'exp': datetime.utcnow() + timedelta(days=7)
-    }, flask_app.config['SECRET_KEY'], algorithm="HS256")
+    }, raw_secret_key, algorithm="HS256")
     
     return jsonify({
         'message': 'Login successful',
