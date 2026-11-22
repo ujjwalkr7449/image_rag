@@ -122,8 +122,9 @@ export default function Dashboard() {
       setSessionId(res.data.sessionId);
       setInitialMessages(undefined);
     } catch (error) {
-      console.error('Upload failed', error);
-      alert('Failed to analyze image. Check console for details.');
+      console.warn('Image analysis failed:', error);
+      const message = error.response?.data?.error || error.message || 'Please try again.';
+      alert(`Image analysis failed: ${message}`);
     } finally {
       setIsUploading(false);
     }

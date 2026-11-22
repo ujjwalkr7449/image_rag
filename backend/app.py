@@ -186,10 +186,8 @@ Base.metadata.create_all(bind=engine)
 
 # Groq Client Setup
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", "your-groq-api-key"))
-VISION_MODEL = "llama-3.2-90b-vision-preview" # For vision, user actually asked for llama-4-scout but groq vision API has specific models. Let me use llama-3.2-90b-vision-preview if it supports it, wait!
-# User strictly said: "use this model for the image analyzing: meta-llama/llama-4-scout-17b-16e-instruct"
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-TEXT_MODEL = "llama-3.3-70b-versatile"
+VISION_MODEL = "qwen/qwen3.8-27b"
+TEXT_MODEL = "openai/gpt-oss-120b"
 
 # Auth Middleware
 def token_required(f):
