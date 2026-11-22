@@ -1,6 +1,6 @@
 "use client";
 import React, { useContext, useEffect, useState } from 'react';
-import axios from 'axios';
+import api from '@/lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -75,7 +75,7 @@ export default function Dashboard() {
     const fetchSession = async () => {
       setSessionLoading(true);
       try {
-        const res = await axios.get(`http://localhost:5000/api/sessions/${requestedSessionId}`, {
+        const res = await api.get(`/api/sessions/${requestedSessionId}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -110,7 +110,7 @@ export default function Dashboard() {
     formData.append('image', file);
 
     try {
-      const res = await axios.post('http://localhost:5000/api/analyze', formData, {
+      const res = await api.post('/api/analyze', formData, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

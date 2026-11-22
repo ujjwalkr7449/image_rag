@@ -77,7 +77,8 @@ def legacy_route(path, methods):
         return handler
     return register
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+cors_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 # Configuration
 raw_secret_key = os.environ.get('SECRET_KEY', 'default-secret-key-super-secure')
@@ -85,8 +86,18 @@ if len(raw_secret_key.encode('utf-8')) < 32:
     # Derive a stable HS256-safe secret from short local/dev keys.
     raw_secret_key = hashlib.sha256(raw_secret_key.encode('utf-8')).hexdigest()
 basedir = os.path.abspath(os.path.dirname(__file__))
-database_url = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
-engine = create_engine(database_url, connect_args={"check_same_thread": False})
+database_url = os.environ.get("DATABASE_URL")
+engine_options = {"pool_pre_ping": True}
+if database_url:
+    # Render supplies postgresql://; psycopg 3 is installed as this app's driver.
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+else:
+    database_url = 'sqlite:///' + os.path.join(basedir, 'snapstudy.db')
+    engine_options["connect_args"] = {"check_same_thread": False}
+engine = create_engine(database_url, **engine_options)
 SessionLocal = scoped_session(sessionmaker(bind=engine, expire_on_commit=False))
 Base = declarative_base()
 

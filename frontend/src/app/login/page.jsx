@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Mail, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldCheck, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
-import axios from 'axios';
+import api from '@/lib/api';
 import BrandLogo from '@/components/BrandLogo';
 
 export default function Login() {
@@ -31,7 +31,7 @@ export default function Login() {
     setError('');
 
     try {
-      const res = await axios.post('http://localhost:5000/api/auth/login', { email, password });
+      const res = await api.post('/api/auth/login', { email, password });
       login(res.data.token, res.data.user);
       router.push('/dashboard');
     } catch (err) {

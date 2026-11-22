@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Mail, Lock, User, ArrowRight, Loader2, Eye, EyeOff, CheckCircle2, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
-import axios from 'axios';
+import api from '@/lib/api';
 import BrandLogo from '@/components/BrandLogo';
 
 export default function Signup() {
@@ -40,7 +40,7 @@ export default function Signup() {
     }
 
     try {
-      const res = await axios.post('http://localhost:5000/api/auth/signup', { username, email, password });
+      const res = await api.post('/api/auth/signup', { username, email, password });
       login(res.data.token, res.data.user);
       router.push('/dashboard');
     } catch (err) {

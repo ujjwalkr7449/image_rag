@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import axios from 'axios';
+import api from '@/lib/api';
 import { AuthContext } from '@/context/AuthContext';
 import ReactMarkdown from 'react-markdown';
 
@@ -42,8 +42,8 @@ export default function ChatInterface({
     setIsTyping(true);
 
     try {
-      const response = await axios.post(
-        'http://localhost:5000/api/chat',
+      const response = await api.post(
+        '/api/chat',
         { messages: nextMessages, sessionId },
         { headers: { Authorization: `Bearer ${token}` } }
       );

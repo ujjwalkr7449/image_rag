@@ -1,6 +1,6 @@
 "use client";
 import React, { useContext, useEffect, useMemo, useState } from 'react';
-import axios from 'axios';
+import api from '@/lib/api';
 import Link from 'next/link';
 import { AuthContext } from '@/context/AuthContext';
 import Layout from '@/components/Layout';
@@ -14,7 +14,7 @@ export default function Library() {
   useEffect(() => {
     const fetchSessions = async () => {
       try {
-        const res = await axios.get('http://localhost:5000/api/sessions', {
+        const res = await api.get('/api/sessions', {
           headers: { Authorization: `Bearer ${token}` },
         });
         const nextSessions = res.data.sessions || [];
