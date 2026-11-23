@@ -80,7 +80,7 @@ def legacy_route(path, methods):
 cors_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
-# Configuration
+# Configuration : enviroments and secret are writen in there
 raw_secret_key = os.environ.get('SECRET_KEY', 'default-secret-key-super-secure')
 if len(raw_secret_key.encode('utf-8')) < 32:
     # Derive a stable HS256-safe secret from short local/dev keys.
